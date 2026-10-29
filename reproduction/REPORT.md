@@ -191,7 +191,7 @@ All four together exceed one week of Kaggle's GPU quota (about 30 h). Suggested 
 sanity check), then **Market-1501** (the paper's headline and efficiency benchmark), then the others. `EPOCH_SCALE`
 shortens every schedule if needed; say so when reporting.
 
-### 7.1 Results of the first full Kaggle run (T4, VMamba-Tiny, ImageNet init, full 300-epoch schedule)
+### 7.1 Results of the full Kaggle runs (T4, VMamba-Tiny, ImageNet init, full 300-epoch schedule, repository config)
 
 The kernel compiled on Kaggle in 1 min 19 s (torch 2.11 / CUDA 12.8, `-std=c++17`), and the CUDA scan was used.
 Training ran at **108 img/s** at steady state. The first epoch is about 2× slower because of warm-up, which made
@@ -199,18 +199,44 @@ the first time estimate (23.7 h) far too pessimistic. The notebook now refines i
 
 | Dataset | Epochs | mAP | R1 | R5 | R10 | Adaptation off at test (mAP / R1) | Tokens / forward | Throughput on vs off | Wall time |
 |---|---|---|---|---|---|---|---|---|---|
-| Market-1501 | 300 / 300 | **80.1** | **91.8** | 97.3 | 98.5 | 79.1 / 91.6 | −3.8 % | 250 vs 227 img/s (×1.10) | 9 h 27 min |
-| Occluded-Duke | 38 / 600 | – | – | – | – | – | – | – | stopped at the 11 h budget; ~20 h left (≈2 sessions) |
+| Run | Dataset | Epochs | mAP | R1 | R5 | R10 | Adaptation off at test (mAP / R1) | Tokens / forward | Throughput on vs off | Wall time |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | Market-1501 | 300 / 300 | **80.1** | **91.8** | 97.3 | 98.5 | 79.1 / 91.6 | −3.8 % | 250 vs 227 img/s (×1.10) | 9 h 27 min |
+| 1 | Occluded-Duke | 38 / 600 | – | – | – | – | – | – | – | stopped at the 11 h budget (not in the paper; abandoned) |
+| 2 | Market-1501 | 300 / 300 | **80.5** | **91.7** | 97.1 | 98.6 | 79.2 / 91.4 | −4.2 % | 235 vs 210 img/s (×1.12) | 10 h 05 min |
+| 2 | Occluded-REID | 300 / 300 | **84.0** | **88.6** | 96.8 | 98.6 | 83.9 / 89.2 | −4.2 % | 227 vs 204 img/s (×1.11) | 43 min |
+| | **Market-1501, mean of runs 1–2** | | **80.3 ± 0.3** | **91.75** | 97.2 | 98.55 | 79.15 | | | |
 
-Market-1501 mAP over training: 67.8 (ep 50) → 72.1 (100) → 72.4 (150) → 76.6 (200) → 79.1 (250) → 80.1 (300).
-Training accuracy reaches 1.000 and loss 0.001 by epoch 250.
+Run 2 repeats Market-1501 with the same seed (1234). The 0.4 mAP difference is GPU nondeterminism (AMP, atomics in
+the scan kernel, cuDNN autotuning), which gives a useful noise floor: differences under about 0.5 mAP are not
+meaningful.
+
+mAP over training:
+* Market-1501, run 1: 67.8 (ep 50) → 72.1 (100) → 72.4 (150) → 76.6 (200) → 79.1 (250) → 80.1 (300).
+* Market-1501, run 2: 68.7 → 74.4 → 75.1 → 75.4 → 79.3 → 80.5.
+* Occluded-REID: 82.1 (ep 50) → 82.4 → 81.4 → 82.8 → 83.8 → 84.0. Most of the accuracy is reached by epoch 50,
+  since the training set has only 1,000 images.
+
+Training accuracy reaches 1.000 by epoch 250 on both datasets.
+
+**Comparison with the paper:**
+
+| Dataset | Paper (mAP / R1) | Ours (mAP / R1) | Gap |
+|---|---|---|---|
+| Market-1501, Tiny (Table 2) | 84.2 / 93.6 | 80.3 / 91.75 (mean of 2) | −3.9 / −1.85 |
+| Occluded-REID (Table 3, size not stated) | 85.3 / 95.5 | 84.0 / 88.6 | −1.3 / −6.9 |
+
+On Occluded-REID, mAP is close, but R1 is 6.9 points lower. R1 on this dataset depends strongly on the train/test
+identity split: only 100 test IDs, with 5 occluded query images and 5 full-body gallery images each. The paper does
+not describe its split, and ours is a random half of the IDs (seed 0). The paper also does not say which backbone
+size its Occluded-REID number uses; if it is Base, the Tiny gap is expected.
 
 Reading the numbers (paper values from Tables 2, 4 and 5; see §9 for the full comparison):
-* **Accuracy:** the paper reports **84.2 mAP / 93.6 R1** for TE-VMamba-Tiny on Market-1501. Our run is **−4.1 mAP /
-  −1.8 R1**. It follows the repository's config, which differs from the paper's Table 1 in ways that are known to
+* **Accuracy:** the paper reports **84.2 mAP / 93.6 R1** for TE-VMamba-Tiny on Market-1501. The mean of our two runs is **−3.9 mAP /
+  −1.85 R1**. It follows the repository's config, which differs from the paper's Table 1 in ways that are known to
   cost accuracy: label smoothing off instead of 0.1, batch size 64 instead of 128, and different prune/merge blocks.
 * **Efficiency:** the paper reports 5.02 → 1.86 GFLOPs for Tiny (−63 %, Table 4) and ×1.83 throughput for Base
-  (Table 5). In our run, tokens fell 3.8 % and throughput rose ×1.10. All of the repository's prune and merge blocks
+  (Table 5). In our runs, tokens fell 3.8–4.2 % and throughput rose ×1.10–1.12. All of the repository's prune and merge blocks
   (global indices 5–7 and 9–11) sit in stage 3 (14×14 = 196 tokens, dim 384). Pruning keeps about 96 % of tokens
   there and merging about 69 %, while stages 1–2 (3,136 and 784 tokens) are untouched. Weighted by per-token cost
   (∝ dim²), stage 3 is roughly 55–60 % of the backbone FLOPs, so this configuration cannot reach a 63 % saving.
