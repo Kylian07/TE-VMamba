@@ -35,24 +35,26 @@ SHORT = {"market1501": "Market-1501", "dukemtmc": "DukeMTMC", "occ_duke": "Occlu
 
 rows = []
 for name in DATASETS_TO_RUN:
-    p = osp.join(OUT_DIR, name, "final_results.json")
+    p = osp.join(OUT_DIR, run_key(name), "final_results.json")
     if osp.isfile(p):
         rows.append(json.load(open(p)))
 if not rows:
     print("no finished runs yet")
 else:
     print(f"{'dataset':15s}{'mAP':>7s}{'R1':>7s}{'R5':>7s}{'R10':>7s} | {'paper mAP/R1':>13s} | "
-          f"{'no-adapt mAP':>12s} | {'tokens':>7s} {'speed':>7s}")
+          f"{'no-adapt mAP':>12s} | {'tokens':>7s} {'FLOPs~':>7s} {'speed':>7s}")
     for r in rows:
         f, na, e = r["final"], r["token_adapt_off_at_test"], r["efficiency"]
         paper = PAPER_REPORTED.get(r["dataset"])
         ps = f"{paper[0]:.1f}/{paper[1]:.1f}" if paper else "-"
         print(f"{SHORT[r['dataset']]:15s}{100 * f['mAP']:7.1f}{100 * f['R1']:7.1f}{100 * f['R5']:7.1f}{100 * f['R10']:7.1f} | "
-              f"{ps:>13s} | {100 * na['mAP']:12.1f} | {-e['token_reduction_%']:6.1f}% x{e['speedup_x']:.2f}")
-    print(f"\nsettings: MODEL_SIZE={rows[0]['model_size']}, epochs={[r['epochs'] for r in rows]}, "
+              f"{ps:>13s} | {100 * na['mAP']:12.1f} | {-e['token_reduction_%']:6.1f}% {-e.get('flops_proxy_reduction_%', float('nan')):6.1f}% "
+              f"x{e['speedup_x']:.2f}")
+    print(f"\nsettings: PROTOCOL={PROTOCOL} (batch {rows[0].get('batch', 64)}), MODEL_SIZE={rows[0]['model_size']}, epochs={[r['epochs'] for r in rows]}, "
           f"init: {rows[0]['pretrain']}, RUN_MODE={rows[0]['run_mode']}")
     print("columns: 'no-adapt mAP' = same trained weights with pruning/merging switched off at test; "
-          "'tokens' = change in tokens processed per forward; 'speed' = throughput ratio adapt-on / adapt-off")
+          "'tokens' = change in tokens processed per forward; 'FLOPs~' = tokens weighted by block width^2 (compare with the "
+          "paper's Table 4: Tiny 5.02 -> 1.86 GFLOPs = -63%); 'speed' = throughput ratio adapt-on / adapt-off")
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.2))
     names = [SHORT[r["dataset"]] for r in rows]
@@ -63,7 +65,7 @@ else:
         axes[0].text(xi - w / 2, 100 * r["final"]["mAP"] + 1, f"{100 * r['final']['mAP']:.1f}", ha="center", fontsize=8, color="#52514e")
         axes[0].text(xi + w / 2, 100 * r["final"]["R1"] + 1, f"{100 * r['final']['R1']:.1f}", ha="center", fontsize=8, color="#52514e")
     axes[0].set_xticks(x, names); axes[0].set_ylim(0, 105); axes[0].set_ylabel("%")
-    axes[0].set_title("TE-VMamba reproduction: accuracy", loc="left", fontsize=11)
+    axes[0].set_title(f"TE-VMamba reproduction ({PROTOCOL} protocol): accuracy", loc="left", fontsize=11)
     axes[0].legend(frameon=False); axes[0].grid(axis="y", color="#e6e5e0"); axes[0].set_axisbelow(True)
     e = rows[0]["efficiency"]
     axes[1].plot(e["off"]["tokens_per_block"], color="#52514e", lw=2, label="pruning/merging off")

@@ -72,8 +72,19 @@ class VMambaReID(nn.Module):
         self.pretrain_report = "random init"
         if cfg.MODEL.PRETRAIN_CHOICE in ("imagenet", "pretrained") and pretrain_path:
             self._load_backbone_pretrained(pretrain_path)
+        self._set_paper_thresholds(ta)       # after loading, so a checkpoint cannot overwrite Table 1's values
         self.classifier = nn.Linear(self.in_planes, num_classes, bias=False)
         self.classifier.apply(weights_init_classifier)
+
+    def _set_paper_thresholds(self, ta):
+        """PROTOCOL="paper": Table 1's alpha and tau. VSSBlock hard-codes alpha_init=0.7 (raw, so alpha=softplus(0.7))
+        and tau_init=0.5, so the initial values are set on the built modules instead of editing the authors' code."""
+        alpha, tau = ta.get("PRUNE_ALPHA"), ta.get("MERGE_TAU")
+        for m in self.base.modules():
+            if alpha is not None and m.__class__.__name__ == "LayerTokenPrune":
+                m.alpha_raw.data.fill_(math.log(math.expm1(alpha)))       # softplus(raw) = alpha
+            if tau is not None and m.__class__.__name__ == "FixedPairThresholdMerge":
+                m.theta_base.data.fill_(math.log(tau / (1.0 - tau)))      # sigmoid(theta_base) = tau
 
     def forward_features(self, x):
         x = self.base.patch_embed(x)

@@ -2,7 +2,7 @@
 
 | File | What it is |
 |---|---|
-| [`TE-VMamba_Kaggle_Reproduction.ipynb`](TE-VMamba_Kaggle_Reproduction.ipynb) | **Self-contained Kaggle notebook.** Embeds the authors' backbone (`model/backbones/*`) and CUDA selective-scan kernel, compiles the kernel on Kaggle's GPU, prepares Market-1501, DukeMTMC-reID, Occluded-Duke and Occluded-REID, and trains/evaluates with the repo's `v2v_tiny` protocol. Resumes across 12 h sessions. |
+| [`TE-VMamba_Kaggle_Reproduction.ipynb`](TE-VMamba_Kaggle_Reproduction.ipynb) | **Self-contained Kaggle notebook.** Embeds the authors' backbone (`model/backbones/*`) and CUDA selective-scan kernel, compiles the kernel on Kaggle's GPU, prepares Market-1501, DukeMTMC-reID, Occluded-Duke and Occluded-REID, and trains/evaluates with either the repo's `v2v_tiny` protocol (`PROTOCOL = "repo"`) or the paper's Table 1 settings (`PROTOCOL = "paper"`, see REPORT §9.4). Resumes across 12 h sessions. |
 | [`REPORT.md`](REPORT.md) | Plain-language methodology report: VMamba background, Δ-based token pruning, pairwise token merging, training protocol, datasets, and **code-vs-paper observations** (verified by running the code). |
 | `tools/notebook_src/`, `tools/build_notebook.py` | Notebook source cells, and the builder that embeds the repository files verbatim (with the listed patches). |
 | `tools/test_kernel_build.py` | Runs the notebook's kernel build for `sm_75` without a GPU (toolchain check). |

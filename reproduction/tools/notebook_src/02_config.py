@@ -78,6 +78,26 @@ DATASET_OVERRIDES = {   # differences of configs/<dataset>/v2v_*.yml from the Ma
     "occ_reid": {"DATASETS": {"NAMES": "occ_reid"}, "MODEL": {"TOKEN_ADAPT": {"PRUNE_THRESHOLD": 0.25}}},
 }
 
+# PROTOCOL = "paper": the paper's Table 1 ("all parameters are equally applied" to Tiny/Small/Base), where it
+# differs from the repository's configs. Not stated in the paper, so kept from the repo: epochs, NUM_INSTANCE (4 images
+# per ID, so batch 128 = 32 IDs x 4), warm-up/cosine schedule, drop-path, augmentations.
+#   * label smoothing 0.1 (repo: off)          * batch 128 (repo: 64)
+#   * pruning blocks 5-10 (repo: 5-7)          * alpha = 0.7, i.e. raw parameter softplus^-1(0.7) (repo: raw 0.7 -> 1.10)
+#   * merging blocks 12-18 (repo Tiny: 9-11). VMamba-Tiny has blocks 0-13, so only 12-13 (stage 4) exist.
+#   * merging threshold tau = 0.1, i.e. sigmoid(theta_base) = 0.1 (repo: tau_init = 0.5 hard-coded in VSSBlock)
+# alpha and tau are hard-coded inside the authors' VSSBlock, so they are set on the built modules (07_model), without
+# editing the embedded source.
+PAPER_TABLE1 = {"MODEL": {"IF_LABELSMOOTH": "on",
+                          "TOKEN_ADAPT": {"PRUNE_LAYERS": list(range(5, 11)), "MERGE_LAYERS": list(range(12, 19)),
+                                          "PRUNE_ALPHA": 0.7, "MERGE_TAU": 0.1}},
+                "SOLVER": {"IMS_PER_BATCH": 128}}
+
+
+def run_key(dataset):
+    """Output folder name: '<dataset>' for the repo protocol, '<dataset>_paper' for the paper protocol."""
+    return dataset if PROTOCOL == "repo" else f"{dataset}_{PROTOCOL}"
+
+
 # Official VMamba ImageNet-1K checkpoints (MzeroMiko/VMamba releases). Only VMamba-T [s1l8] has exactly the same
 # architecture as the repo's v2v configs; the released S/B checkpoints are the s2l15 design (depths 2-2-15-2,
 # ssm_ratio 2.0), which does not match v2v_small/v2v_base, so those sizes fall back to random init.
@@ -89,6 +109,14 @@ IMAGENET_CKPTS = {
 
 def build_cfg(dataset):
     raw = _merge(_merge(BASE, SIZE_OVERRIDES[MODEL_SIZE]), DATASET_OVERRIDES[dataset])
+    if PROTOCOL == "paper":
+        raw = _merge(raw, PAPER_TABLE1)
+        n_blocks = sum(raw["MODEL"]["VSSM"]["DEPTHS"])
+        ta = raw["MODEL"]["TOKEN_ADAPT"]
+        ta["PRUNE_LAYERS"] = [i for i in ta["PRUNE_LAYERS"] if i < n_blocks]
+        ta["MERGE_LAYERS"] = [i for i in ta["MERGE_LAYERS"] if i < n_blocks]   # Tiny: [12, 13]
+    elif PROTOCOL != "repo":
+        raise ValueError(f"PROTOCOL must be 'repo' or 'paper', got {PROTOCOL!r}")
     cfg = CN.wrap(raw)
     cfg.SOLVER.MAX_EPOCHS = max(1, int(round(cfg.SOLVER.MAX_EPOCHS * EPOCH_SCALE)))
     if RUN_MODE == "quick":
@@ -98,8 +126,12 @@ def build_cfg(dataset):
     if TEST_IMG_SIZE:
         s = int(TEST_IMG_SIZE)
         cfg.INPUT.SIZE_TRAIN = cfg.INPUT.SIZE_TEST = [s, s]
-        cfg.SOLVER.IMS_PER_BATCH = 16
+        cfg.SOLVER.IMS_PER_BATCH = 16 if PROTOCOL == "repo" else 32
     return cfg
 
 
-print(json.dumps({k: build_cfg("occ_duke")[k] for k in ("MODEL", "SOLVER")}, indent=1)[:1500])
+_c = build_cfg("market1501")
+print(f"PROTOCOL={PROTOCOL}: batch {_c.SOLVER.IMS_PER_BATCH} | label smoothing {_c.MODEL.IF_LABELSMOOTH} | "
+      f"prune blocks {_c.MODEL.TOKEN_ADAPT.PRUNE_LAYERS} | merge blocks {_c.MODEL.TOKEN_ADAPT.MERGE_LAYERS} | "
+      f"alpha {_c.MODEL.TOKEN_ADAPT.get('PRUNE_ALPHA') or 'softplus(0.7)=1.10 (hard-coded)'} | "
+      f"tau {_c.MODEL.TOKEN_ADAPT.get('MERGE_TAU') or '0.5 (hard-coded)'} | epochs {_c.SOLVER.MAX_EPOCHS}")

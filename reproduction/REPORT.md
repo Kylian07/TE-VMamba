@@ -303,3 +303,42 @@ have nothing in the paper to compare with.
    explains why the 63 % FLOPs saving is not reproduced.
 5. **Comparable datasets in this notebook:** Market-1501 and Occluded-REID. MSMT17 images are not on Kaggle. CUHK03
    is on Kaggle, but the repository has no CUHK03 loader, so one would have to be written.
+
+### 9.4 `PROTOCOL = "paper"`: running with the paper's Table 1 settings
+The notebook has a switch (`PROTOCOL`, run-configuration cell) that applies the paper's Table 1 wherever it
+differs from the repository config. Everything else stays as in the repository, because the paper does not state
+it: 300 epochs, 4 images per identity, warm-up and cosine schedule, drop-path 0.2, augmentations, ImageNet
+initialisation.
+
+| Setting | `PROTOCOL="repo"` | `PROTOCOL="paper"` |
+|---|---|---|
+| Label smoothing | off | **0.1** |
+| Batch | 64 (16 IDs × 4) | **128 (32 IDs × 4)** |
+| Pruning blocks | 5–7 | **5–10** |
+| α | softplus(0.7) = 1.10 | **0.7** (raw parameter = softplus⁻¹(0.7)) |
+| Merging blocks | 9–11 | **12–13**: Table 1 says 12–18, but VMamba-Tiny has only blocks 0–13 |
+| Merging threshold τ | 0.5 | **0.1** (sigmoid(θ_base) = 0.1) |
+
+How it is implemented:
+* α and τ are hard-coded in the authors' `VSSBlock`, so they are set on the built modules after the ImageNet
+  weights load. The embedded source is not edited.
+* Results go to `<dataset>_paper/`, so they never mix with the repo-protocol runs.
+* Batch 128 is first tried on one T4 (the log prints peak memory). If it does not fit and a second GPU is visible,
+  training switches to `nn.DataParallel`. The loss is still computed on GPU 0 over all 128 images, so batch-hard
+  triplet mining is unchanged.
+
+Checked locally (CPU, 224×224, ImageNet weights):
+* α = 0.700 in all six prune modules and τ = 0.100 in both merge modules.
+* An end-to-end run, and a stop-and-resume run, give identical metrics.
+* What we could not check without a GPU: the memory probe and the DataParallel fallback.
+
+**What to expect on efficiency.** The paper settings do not make the token reduction large:
+* With α = 0.7, pruning still keeps about 95 % of tokens. |Δ| has a long tail, so σ is large and μ − 0.7σ sits near
+  the bottom of the distribution.
+* On a 14-row grid, a layer saves compute only when it drops at least 14 tokens.
+* τ = 0.1 merges almost every pair, but only in the last stage (7×7 → 21 tokens).
+* On the same images, the FLOPs proxy falls by about 6 % (repo protocol: about 13 %), against the paper's 63 %.
+
+So this run mainly tests whether **label smoothing and batch 128** close the accuracy gap (84.2 vs 80.3 mAP). The
+efficiency claim would need a different pruning rule from the released one (for example one that actually trains α,
+which the hard keep-mask and `no_grad` prevent).

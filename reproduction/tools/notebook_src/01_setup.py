@@ -43,10 +43,10 @@
 # repo has no CUHK03 loader or config.
 
 # %%
-# ---- first code cell: pin ONE GPU (no multi-GPU code path in the repo except DDP) ----
+# ---- first code cell: training runs on GPU 0; GPU 1 is used only if PROTOCOL="paper" needs it (batch 128 OOM) ----
 import os, time
 T_NOTEBOOK_START = time.time()     # used to stop cleanly before Kaggle's session limit
-os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("TEV_GPU", "0")
+os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("TEV_GPU", "0,1")
 
 import copy, csv, glob, hashlib, json, logging, math, random, re, shutil, subprocess, sys, time, urllib.request, warnings, zipfile
 import os.path as osp
@@ -86,6 +86,12 @@ RUN_MODE = os.environ.get("TEV_RUN_MODE", "quick")   # "quick" = smoke test (min
 # Only Market-1501 and Occluded-REID are evaluated in the paper; "dukemtmc" and "occ_duke" come from the repo's configs.
 DATASETS_TO_RUN = os.environ.get("TEV_DATASETS", "occ_reid,market1501").split(",")
 
+# "repo"  = the repository's configs (configs/<dataset>/v2v_tiny.yml), as released.
+# "paper" = the paper's Table 1 instead: label smoothing 0.1, batch 128, pruning blocks 5-10 with alpha = 0.7,
+#           merging blocks 12-18 (only 12-13 exist in Tiny) with tau = 0.1. Results are stored separately
+#           (<dataset>_paper/), so both protocols can live in the same output.
+PROTOCOL = os.environ.get("TEV_PROTOCOL", "repo")
+
 MODEL_SIZE = "tiny"         # "tiny" (default; official ImageNet weights exist) | "small" | "base" (repo's v2v_* configs)
 PRETRAIN = os.environ.get("TEV_PRETRAIN", "imagenet")   # "imagenet": official VMamba ImageNet-1K weights when they match MODEL_SIZE | "none": as shipped (empty path)
 EPOCH_SCALE = 1.0           # 1.0 = the repo's schedule (300 / 600 epochs). e.g. 0.5 halves every schedule (state it when reporting!)
@@ -113,5 +119,5 @@ TEST_IMG_SIZE = os.environ.get("TEV_TEST_SIZE")          # local CPU tests only:
 if RUN_MODE != "full":
     print("!" * 100 + "\n!! RUN_MODE = \"quick\": SMOKE TEST ONLY. Numbers are NOT results. "
           "Set RUN_MODE = \"full\" for the real experiment.\n" + "!" * 100)
-print(f"RUN_MODE={RUN_MODE} | MODEL_SIZE={MODEL_SIZE} | PRETRAIN={PRETRAIN} | EPOCH_SCALE={EPOCH_SCALE} | "
+print(f"RUN_MODE={RUN_MODE} | PROTOCOL={PROTOCOL} | MODEL_SIZE={MODEL_SIZE} | PRETRAIN={PRETRAIN} | EPOCH_SCALE={EPOCH_SCALE} | "
       f"datasets={DATASETS_TO_RUN}\nDATA_ROOT={DATA_ROOT} | OUT_DIR={OUT_DIR}")

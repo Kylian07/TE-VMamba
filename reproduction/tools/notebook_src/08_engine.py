@@ -57,22 +57,24 @@ def evaluate(model, val_loader, num_query, feat_norm=True):
 def measure_efficiency(model, size, batch=64, iters=20):
     model.eval()
     x = torch.randn(batch, 3, size[0], size[1], device=DEVICE)
-    tokens = []
+    tokens, chans = [], []
 
     def hook(_m, inp, _out):
-        t = inp[0]
+        t = inp[0]                       # (B, C, H, W) for the ln2d (channel-first) configs
         tokens.append(t.shape[-1] * t.shape[-2] if t.dim() == 4 else t.shape[1])
+        chans.append(t.shape[1] if t.dim() == 4 else t.shape[-1])
     blocks = [m for m in model.modules() if m.__class__.__name__ == "VSSBlock"]
     res = {}
     for flag in (True, False):
         vmamba_mod.ENABLE_TOKEN_ADAPTATION = flag
         handles = [b.register_forward_hook(hook) for b in blocks]
-        tokens.clear()
+        tokens.clear(); chans.clear()
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(DEVICE == "cuda")):
             model(x)
         for h in handles:
             h.remove()
         per_block = list(tokens)
+        cost = float(sum(n * c * c for n, c in zip(tokens, chans)))   # per-block cost ~ tokens x dim^2
         pr, mr = token_stats(model) if flag else ([], [])
         n = iters if DEVICE == "cuda" else 2
         if DEVICE == "cuda":
@@ -83,11 +85,14 @@ def measure_efficiency(model, size, batch=64, iters=20):
                 model(x)
         if DEVICE == "cuda":
             torch.cuda.synchronize()
-        res["on" if flag else "off"] = {"tokens_per_block": per_block, "total_tokens": int(sum(per_block)),
+        res["on" if flag else "off"] = {"tokens_per_block": per_block, "total_tokens": int(sum(per_block)), "cost_proxy": cost,
                                         "img_per_s": batch * n / (time.time() - t0),
                                         "prune_keep": pr, "merge_keep": mr}
     vmamba_mod.ENABLE_TOKEN_ADAPTATION = True
     res["token_reduction_%"] = 100.0 * (1 - res["on"]["total_tokens"] / max(res["off"]["total_tokens"], 1))
+    # FLOPs proxy: the linear layers (in/out projections, MLP) dominate a VSS block and scale with tokens x dim^2,
+    # so this weights each block's token count by its width. It is comparable to the paper's GFLOPs ratio.
+    res["flops_proxy_reduction_%"] = 100.0 * (1 - res["on"]["cost_proxy"] / max(res["off"]["cost_proxy"], 1e-9))
     res["speedup_x"] = res["on"]["img_per_s"] / max(res["off"]["img_per_s"], 1e-9)
     return res
 
@@ -143,18 +148,60 @@ def _find_resume(name):
     return None
 
 
+def _probe_batch_memory(model, cfg, num_classes, loss_fn):
+    """PROTOCOL="paper" uses batch 128. Try one AMP forward+backward at that size on GPU 0. If it does not fit and a
+    second GPU is visible, train with nn.DataParallel: each GPU runs half the batch, but the outputs are gathered on
+    GPU 0 before the loss, so the batch-hard triplet loss still mines over all 128 images. The probe leaves the
+    weights, BN statistics and RNG state exactly as they were."""
+    if DEVICE != "cuda" or cfg.SOLVER.IMS_PER_BATCH <= 64:
+        return model
+    bs, (h, w) = cfg.SOLVER.IMS_PER_BATCH, cfg.INPUT.SIZE_TRAIN
+    saved = copy.deepcopy(model.state_dict())
+    rng = (torch.get_rng_state(), torch.cuda.get_rng_state())
+    ok = True
+    try:
+        torch.cuda.reset_peak_memory_stats()
+        x = torch.randn(bs, 3, h, w, device=DEVICE)
+        y = torch.arange(bs, device=DEVICE) % num_classes
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            score, feat = model(x, y)
+            loss = loss_fn(score, feat, y)
+        loss.backward()
+        peak = torch.cuda.max_memory_allocated() / 2 ** 30
+        print(f"[memory] batch {bs} fits on one GPU: peak {peak:.1f} GiB of "
+              f"{torch.cuda.get_device_properties(0).total_memory / 2 ** 30:.1f} GiB")
+    except torch.cuda.OutOfMemoryError:
+        ok = False
+    del x
+    model.zero_grad(set_to_none=True)
+    model.load_state_dict(saved)
+    torch.set_rng_state(rng[0]); torch.cuda.set_rng_state(rng[1])
+    torch.cuda.empty_cache()
+    if ok:
+        return model
+    if torch.cuda.device_count() >= 2:
+        print(f"[memory] batch {bs} does not fit on one GPU -> nn.DataParallel over {torch.cuda.device_count()} GPUs "
+              "(loss still computed over the full batch)")
+        return nn.DataParallel(model)
+    raise RuntimeError(f"batch {bs} does not fit on one GPU and no second GPU is visible: choose 'GPU T4 x2'")
+
+
 def train_and_eval(name):
     cfg = build_cfg(name)
-    out_dir = osp.join(OUT_DIR, name); os.makedirs(out_dir, exist_ok=True)
+    key = run_key(name)
+    out_dir = osp.join(OUT_DIR, key); os.makedirs(out_dir, exist_ok=True)
     final_path = osp.join(out_dir, "final_results.json")
     if osp.isfile(final_path) and RESUME:
-        print(f"[skip] {name}: already finished -> {final_path}")
+        print(f"[skip] {key}: already finished -> {final_path}")
         return json.load(open(final_path))
     lg = setup_logger(out_dir)
     set_seed(cfg.SOLVER.SEED)
     train_loader, val_loader, num_query, num_classes, dataset = make_dataloader(cfg)
     model = VMambaReID(num_classes, cfg, resolve_pretrain_path()).to(DEVICE)
-    lg.info(f"[{name}] classes={num_classes} | epochs={cfg.SOLVER.MAX_EPOCHS} | input={cfg.INPUT.SIZE_TRAIN} | "
+    lg.info(f"[{key}] protocol={PROTOCOL} | batch={cfg.SOLVER.IMS_PER_BATCH} | "
+            f"label smoothing={cfg.MODEL.IF_LABELSMOOTH} | prune={list(cfg.MODEL.TOKEN_ADAPT.PRUNE_LAYERS)} | "
+            f"merge={list(cfg.MODEL.TOKEN_ADAPT.MERGE_LAYERS)}")
+    lg.info(f"[{key}] classes={num_classes} | epochs={cfg.SOLVER.MAX_EPOCHS} | input={cfg.INPUT.SIZE_TRAIN} | "
             f"backbone={MODEL_SIZE} | {model.pretrain_report}")
 
     # == train.py: one forward in eval mode before the optimiser (creates the lazy merge-gate MLPs)
@@ -167,11 +214,13 @@ def train_and_eval(name):
     model.train()
 
     loss_fn = make_loss(cfg, num_classes)
+    train_model = _probe_batch_memory(model, cfg, num_classes, loss_fn)   # == model unless batch 128 needs 2 GPUs
+    model.train()
     optimizer = make_optimizer(cfg, model)
     scheduler = create_scheduler(cfg, optimizer)
     scaler = torch.amp.GradScaler("cuda", enabled=(DEVICE == "cuda"))
     start_epoch, history = 1, []
-    rp = _find_resume(name) if RESUME else None
+    rp = _find_resume(key) if RESUME else None
     if rp:
         st = torch.load(rp, map_location="cpu", weights_only=False)
         # strict=False like the repo's test.py: VSSM._load_from_state_dict renames "head.*" -> "classifier.head.*"
@@ -190,8 +239,8 @@ def train_and_eval(name):
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(),
                     "epoch": epoch, "history": history, "rng_py": random.getstate(), "rng_np": np.random.get_state(),
                     "rng_torch": torch.get_rng_state(),
-                    "rng_cuda": torch.cuda.get_rng_state() if DEVICE == "cuda" else None}, _state_path(name) + ".tmp")
-        os.replace(_state_path(name) + ".tmp", _state_path(name))
+                    "rng_cuda": torch.cuda.get_rng_state() if DEVICE == "cuda" else None}, _state_path(key) + ".tmp")
+        os.replace(_state_path(key) + ".tmp", _state_path(key))
 
     epochs = cfg.SOLVER.MAX_EPOCHS
     epoch_times = []
@@ -207,7 +256,7 @@ def train_and_eval(name):
             optimizer.zero_grad(set_to_none=True)
             img, target = img.to(DEVICE, non_blocking=True), vid.to(DEVICE, non_blocking=True)
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(DEVICE == "cuda")):
-                score, feat = model(img, target)
+                score, feat = train_model(img, target)
                 loss = loss_fn(score, feat, target, target_cam)
             scaler.scale(loss).backward()
             scaler.step(optimizer); scaler.update()
@@ -224,7 +273,7 @@ def train_and_eval(name):
             # the first epoch includes cuDNN/Triton warm-up (~2x slower), so the estimate is refined 5 epochs later
             remaining = np.mean(epoch_times[-3:]) * (epochs - epoch) / 3600
             left = MAX_SESSION_HOURS - (time.time() - T_NOTEBOOK_START) / 3600
-            lg.info(f"[estimate] ~{remaining:.1f} h of training left for {name} at this speed, {left:.1f} h left in this "
+            lg.info(f"[estimate] ~{remaining:.1f} h of training left for {key} at this speed, {left:.1f} h left in this "
                     f"session ({'fits' if remaining < left else 'needs resume across sessions'})"
                     + (f" | first epoch includes warm-up; refined at epoch {start_epoch + 5}" if epoch == start_epoch else ""))
         if EVAL_EVERY and epoch % EVAL_EVERY == 0 and epoch != epochs:
@@ -235,23 +284,23 @@ def train_and_eval(name):
         elapsed_h = (time.time() - T_NOTEBOOK_START) / 3600
         if epoch != epochs and elapsed_h + 1.5 * np.mean(epoch_times) / 3600 + 0.25 > MAX_SESSION_HOURS:
             save_state(epoch)
-            lg.info(f"[time] {elapsed_h:.1f} h used: stopping {name} at epoch {epoch}. Attach this output and re-run to resume.")
+            lg.info(f"[time] {elapsed_h:.1f} h used: stopping {key} at epoch {epoch}. Attach this output and re-run to resume.")
             return None
 
     r = evaluate(model, val_loader, num_query); r["epoch"] = epochs; history.append(r)
-    lg.info(f"[final] {name}: mAP {r['mAP']:.1%} | R1 {r['R1']:.1%} | R5 {r['R5']:.1%} | R10 {r['R10']:.1%}")
+    lg.info(f"[final] {key}: mAP {r['mAP']:.1%} | R1 {r['R1']:.1%} | R5 {r['R5']:.1%} | R10 {r['R10']:.1%}")
     vmamba_mod.ENABLE_TOKEN_ADAPTATION = False
     r_noadapt = evaluate(model, val_loader, num_query)
     vmamba_mod.ENABLE_TOKEN_ADAPTATION = True
     lg.info(f"[diagnostic] same weights, token pruning/merging switched OFF at test: mAP {r_noadapt['mAP']:.1%} R1 {r_noadapt['R1']:.1%}")
     eff = measure_efficiency(model, cfg.INPUT.SIZE_TEST)
-    lg.info(f"[efficiency] tokens/forward -{eff['token_reduction_%']:.1f}% | throughput on {eff['on']['img_per_s']:.0f} "
+    lg.info(f"[efficiency] tokens/forward -{eff['token_reduction_%']:.1f}% | FLOPs proxy -{eff['flops_proxy_reduction_%']:.1f}% | throughput on {eff['on']['img_per_s']:.0f} "
             f"vs off {eff['off']['img_per_s']:.0f} img/s (x{eff['speedup_x']:.2f})")
     torch.save(model.state_dict(), osp.join(out_dir, "final_model.pth"))
-    result = {"dataset": name, "model_size": MODEL_SIZE, "pretrain": model.pretrain_report, "epochs": epochs,
+    result = {"dataset": name, "protocol": PROTOCOL, "batch": cfg.SOLVER.IMS_PER_BATCH, "model_size": MODEL_SIZE, "pretrain": model.pretrain_report, "epochs": epochs,
               "run_mode": RUN_MODE, "final": r, "token_adapt_off_at_test": r_noadapt, "efficiency": eff,
               "history": history}
     json.dump(result, open(final_path, "w"), indent=1)
-    if osp.isfile(_state_path(name)):
-        os.remove(_state_path(name))            # finished: the resumable state is no longer needed
+    if osp.isfile(_state_path(key)):
+        os.remove(_state_path(key))            # finished: the resumable state is no longer needed
     return result
