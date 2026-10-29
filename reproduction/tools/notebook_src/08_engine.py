@@ -220,10 +220,13 @@ def train_and_eval(name):
         epoch_times.append(dt)
         lg.info(f"Epoch {epoch}/{epochs} done: loss {loss_sum / max(n_seen, 1):.3f} acc {acc_sum / max(n_iter + 1, 1):.3f} "
                 f"lr {optimizer.param_groups[0]['lr']:.2e} | {dt:.0f}s ({n_seen / max(dt, 1e-9):.0f} img/s)")
-        if epoch == start_epoch:
-            remaining = np.mean(epoch_times) * (epochs - epoch) / 3600
-            lg.info(f"[estimate] ~{remaining:.1f} h of training left for {name} at this speed "
-                    f"({'fits' if remaining < MAX_SESSION_HOURS else 'needs resume across sessions'})")
+        if epoch in (start_epoch, start_epoch + 5):
+            # the first epoch includes cuDNN/Triton warm-up (~2x slower), so the estimate is refined 5 epochs later
+            remaining = np.mean(epoch_times[-3:]) * (epochs - epoch) / 3600
+            left = MAX_SESSION_HOURS - (time.time() - T_NOTEBOOK_START) / 3600
+            lg.info(f"[estimate] ~{remaining:.1f} h of training left for {name} at this speed, {left:.1f} h left in this "
+                    f"session ({'fits' if remaining < left else 'needs resume across sessions'})"
+                    + (f" | first epoch includes warm-up; refined at epoch {start_epoch + 5}" if epoch == start_epoch else ""))
         if EVAL_EVERY and epoch % EVAL_EVERY == 0 and epoch != epochs:
             r = evaluate(model, val_loader, num_query); r["epoch"] = epoch; history.append(r)
             lg.info(f"[eval] epoch {epoch}: mAP {r['mAP']:.1%} R1 {r['R1']:.1%}")
