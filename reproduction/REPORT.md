@@ -8,11 +8,9 @@
 > Kaggle notebook that embeds the authors' backbone and CUDA kernel, prepares the datasets from Kaggle and official
 > sources, and trains and evaluates with the repository's protocol.
 >
-> **How this report was made:** from a line-by-line reading of the code in this repository, plus the paper's public
-> abstract. The paper PDF could not be opened from the environment used to prepare this report (CVF Open Access was
-> blocked), so **no paper result numbers are quoted here**. Copy them from the paper's tables into
-> `PAPER_REPORTED` in the notebook. Everything stated about *what the code does* was checked against the code, and
-> the key claims were also checked by running it (§6).
+> **How this report was made:** from a line-by-line reading of the code in this repository, checked by running it
+> (§6), and from the paper PDF (CVPR 2026 Open Access version, pp. 4363–4372). §9 compares the paper, the
+> repository and our Kaggle run side by side.
 
 ---
 
@@ -207,20 +205,21 @@ the first time estimate (23.7 h) far too pessimistic. The notebook now refines i
 Market-1501 mAP over training: 67.8 (ep 50) → 72.1 (100) → 72.4 (150) → 76.6 (200) → 79.1 (250) → 80.1 (300).
 Training accuracy reaches 1.000 and loss 0.001 by epoch 250.
 
-Reading the numbers:
-* **Accuracy:** this is the repo's Tiny protocol, a single run with seed 1234. Compare it with the paper's
-  TE-VMamba-Tiny Market-1501 row (fill `PAPER_REPORTED`). Strong baselines in the literature (BoT ResNet-50
-  ≈ 86 mAP, TransReID ViT-B ≈ 89 mAP) use 256×128 input, label smoothing and/or larger backbones, so they are not
-  like-for-like with a 224×224 VMamba-T run without label smoothing.
-* **Efficiency:** the reduction is small. All prune and merge blocks (global indices 5–7 and 9–11) sit in stage 3
-  (14×14 = 196 tokens, dim 384). Pruning keeps about 96 % and merging about 69 % of the tokens there, while stages
-  1–2 (3,136 and 784 tokens) are untouched, so the token total falls only 3.8 %. Weighting by per-token cost
-  (∝ dim²), stage 3 is roughly 55–60 % of the backbone FLOPs. That bounds the possible saving in this configuration
-  at about 10–20 %. A secondary summary of the paper mentions "over 60 % FLOPs reduction" on Market-1501. If the
-  paper says that for this Tiny setting, this run does not reproduce it. A likely contributor is observation 1–2
-  (§6): the `torch.no_grad()` around prune/merge means the pruning thresholds never train and stay at their
-  initial ~4 % pruning rate.
-* **The adaptation costs no accuracy:** with the same weights, turning it off at test gives 79.1 vs 80.1 mAP.
+Reading the numbers (paper values from Tables 2, 4 and 5; see §9 for the full comparison):
+* **Accuracy:** the paper reports **84.2 mAP / 93.6 R1** for TE-VMamba-Tiny on Market-1501. Our run is **−4.1 mAP /
+  −1.8 R1**. It follows the repository's config, which differs from the paper's Table 1 in ways that are known to
+  cost accuracy: label smoothing off instead of 0.1, batch size 64 instead of 128, and different prune/merge blocks.
+* **Efficiency:** the paper reports 5.02 → 1.86 GFLOPs for Tiny (−63 %, Table 4) and ×1.83 throughput for Base
+  (Table 5). In our run, tokens fell 3.8 % and throughput rose ×1.10. All of the repository's prune and merge blocks
+  (global indices 5–7 and 9–11) sit in stage 3 (14×14 = 196 tokens, dim 384). Pruning keeps about 96 % of tokens
+  there and merging about 69 %, while stages 1–2 (3,136 and 784 tokens) are untouched. Weighted by per-token cost
+  (∝ dim²), stage 3 is roughly 55–60 % of the backbone FLOPs, so this configuration cannot reach a 63 % saving.
+  The paper's own Table 4 attributes the whole saving to pruning (merging alone leaves FLOPs at 5.02). With the
+  repository's fixed threshold θ = μ − 1.10σ (α = softplus(0.7), never trained; observation 1), only about 4 % of
+  tokens are pruned.
+* **The adaptation costs no accuracy in our run:** with the same weights, turning it off at test gives 79.1 vs
+  80.1 mAP. In the paper's Table 4, by contrast, the variant without token reduction is much better (Tiny: 91.6
+  mAP / 98.2 R1 vs 84.2 / 93.6).
 
 ## 8. Suggested follow-up experiments
 * **Fix observation 1–2 and measure the difference:** remove the `torch.no_grad()` around prune/merge, so the
@@ -228,3 +227,53 @@ Reading the numbers:
 * **Token adaptation off at train and test** (`TOKEN_ADAPT.ENABLE=False`): the plain VMamba baseline the paper
   compares against.
 * **From scratch vs ImageNet** (`PRETRAIN="none"`): what the shipped configs actually do.
+
+## 9. Paper vs repository vs this reproduction
+
+### 9.1 What the paper actually evaluates
+Market-1501, CUHK03-NP (labeled and detected), MSMT17 and Occluded-REID, on one RTX 5080 (§5.1). **DukeMTMC-reID and
+Occluded-Duke are not in the paper**: they appear only in the repository's configs. So runs on those two datasets
+have nothing in the paper to compare with.
+
+| Paper result (no re-ranking) | Tiny | Small | Base |
+|---|---|---|---|
+| Market-1501 R1 / mAP (Table 2) | 93.6 / 84.2 | 95.1 / 85.7 | 96.7 / 87.1 |
+| CUHK03-NP labeled R1 / mAP | 96.3 / 92.1 | 95.5 / 91.7 | 97.3 / 94.0 |
+| CUHK03-NP detected R1 / mAP | 94.0 / 90.6 | 93.2 / 89.5 | 95.4 / 91.7 |
+| MSMT17 R1 / mAP | 82.8 / 62.9 | 80.9 / 60.9 | 83.3 / 62.7 |
+| Occluded-REID R1 / mAP (Table 3) | 95.5 / 85.3, size not stated | | |
+| Market GFLOPs, none → prune+merge (Table 4) | 5.02 → 1.86 | 8.79 → 2.20 | 15.46 → 3.82 |
+| Market, no token reduction R1 / mAP (Table 4) | 98.2 / 91.6 | 98.1 / 91.1 | 98.2 / 91.6 |
+
+### 9.2 Settings: paper (Table 1) vs repository (`v2v_tiny.yml`) vs our run
+
+| Setting | Paper, Table 1 | Repository config | Our run |
+|---|---|---|---|
+| Input / patch | 224 / 4 | 224 / 4 | 224 / 4 |
+| Tiny dims / depths | 96 / [2,2,8,2] | 96 / [2,2,8,2] | same |
+| Pruning layers | 5–10 | 5, 6, 7 | 5, 6, 7 |
+| Pruning α | 0.7 | softplus(0.7) = 1.10, hard-coded, not trained | same as repository |
+| Merging layers | 12–18 (beyond Tiny's 14 blocks, so presumably given for Base) | 9, 10, 11 | 9, 10, 11 |
+| Merging threshold τ | 0.1 | sigmoid(MLP), with τ_init 0.5 hard-coded | same as repository |
+| Batch size | **128** | **64** (16 × 4) | 64 |
+| Label smoothing | **0.1** | **off** | off |
+| Optimiser | AdamW, lr 3e-4, wd 0.05 | same | same |
+| Loss | CE + triplet (λ = 1, margin 0.3) | same, but no smoothing | same as repository |
+| Epochs | **not stated** | 300 (600 for Occluded-Duke and MSMT17) | 300 |
+| Initialisation | not stated | "imagenet" with an empty path, so nothing is loaded | official VMamba-T ImageNet-1K |
+
+### 9.3 Points worth raising
+1. **The accuracy–efficiency trade-off is larger than the abstract suggests.** In Table 4, TE-VMamba-Tiny loses
+   7.4 mAP and 4.6 R1 against the same backbone without token reduction (91.6 → 84.2 mAP). The "competitive
+   accuracy" in the abstract is measured against other methods, not against the unreduced backbone.
+2. **The no-reduction baselines are unusually strong.** 91.6 mAP / 98.2 R1 on Market-1501 without re-ranking is
+   above every method in Table 2, including TransReID (88.9) and DC-Former (90.6). The baseline is also almost
+   identical for Tiny, Small and Base (91.6 / 91.1 / 91.6). Asking the authors how these numbers were obtained is
+   reasonable.
+3. **The CUHK03-NP numbers are high.** 92.1 mAP (labeled, Tiny) is well above the Transformer methods in Table 2
+   (79.6–83.3 mAP).
+4. **The released code does not match the stated method.** The thresholds are fixed (§6, observation 1), α
+   differs (1.10 vs 0.7), and the prune and merge layers differ from Table 1. The ~4 % pruning rate we measured
+   explains why the 63 % FLOPs saving is not reproduced.
+5. **Comparable datasets in this notebook:** Market-1501 and Occluded-REID. MSMT17 images are not on Kaggle. CUHK03
+   is on Kaggle, but the repository has no CUHK03 loader, so one would have to be written.

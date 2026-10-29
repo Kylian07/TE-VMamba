@@ -82,8 +82,9 @@ print(f"torch {torch.__version__} (CUDA {torch.version.cuda}) | timm {timm.__ver
 # %%
 RUN_MODE = os.environ.get("TEV_RUN_MODE", "quick")   # "quick" = smoke test (minutes) | "full" = paper protocol
 
-# Datasets to train+evaluate, in this order (each is an independent run, as in the paper):
-DATASETS_TO_RUN = os.environ.get("TEV_DATASETS", "market1501,occ_duke,occ_reid,dukemtmc").split(",")
+# Datasets to train+evaluate, in this order (each is an independent run, as in the paper).
+# Only Market-1501 and Occluded-REID are evaluated in the paper; "dukemtmc" and "occ_duke" come from the repo's configs.
+DATASETS_TO_RUN = os.environ.get("TEV_DATASETS", "occ_reid,market1501").split(",")
 
 MODEL_SIZE = "tiny"         # "tiny" (default; official ImageNet weights exist) | "small" | "base" (repo's v2v_* configs)
 PRETRAIN = os.environ.get("TEV_PRETRAIN", "imagenet")   # "imagenet": official VMamba ImageNet-1K weights when they match MODEL_SIZE | "none": as shipped (empty path)

@@ -19,14 +19,17 @@ for name in DATASETS_TO_RUN:
 
 # %% [markdown]
 # ## Results
-# `PAPER_REPORTED` is left empty on purpose: fill in TE-VMamba's numbers from the paper's tables (the PDF could not
-# be read while preparing this notebook), using the **tiny** row if the paper reports one.
+# `PAPER_REPORTED` holds the paper's numbers (CVPR 2026, Table 2: TE-VMamba-Tiny on Market-1501; Table 3: Occluded-REID,
+# backbone size not stated). The paper does not evaluate on DukeMTMC-reID or Occluded-Duke, so there is nothing to
+# compare those runs with.
 
 # %%
 import matplotlib.pyplot as plt
 
-PAPER_REPORTED = {   # (mAP %, Rank-1 %) for TE-VMamba-Tiny from the paper; None = not filled in yet
-    "market1501": None, "dukemtmc": None, "occ_duke": None, "occ_reid": None,
+PAPER_REPORTED = {   # (mAP %, Rank-1 %) from the paper; None = not reported in the paper
+    "market1501": (84.2, 93.6),   # Table 2, TE-VMamba-Tiny (Small 85.7/95.1, Base 87.1/96.7)
+    "occ_reid": (85.3, 95.5),     # Table 3, "TE-VMamba (Ours)", backbone size not stated
+    "dukemtmc": None, "occ_duke": None,   # not evaluated in the paper (only in the repo's configs)
 }
 SHORT = {"market1501": "Market-1501", "dukemtmc": "DukeMTMC", "occ_duke": "Occluded-Duke", "occ_reid": "Occluded-REID"}
 
