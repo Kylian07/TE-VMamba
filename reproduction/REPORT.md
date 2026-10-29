@@ -193,6 +193,35 @@ All four together exceed one week of Kaggle's GPU quota (about 30 h). Suggested 
 sanity check), then **Market-1501** (the paper's headline and efficiency benchmark), then the others. `EPOCH_SCALE`
 shortens every schedule if needed; say so when reporting.
 
+### 7.1 Results of the first full Kaggle run (T4, VMamba-Tiny, ImageNet init, full 300-epoch schedule)
+
+The kernel compiled on Kaggle in 1 min 19 s (torch 2.11 / CUDA 12.8, `-std=c++17`), and the CUDA scan was used.
+Training ran at **108 img/s** at steady state. The first epoch is about 2× slower because of warm-up, which made
+the first time estimate (23.7 h) far too pessimistic. The notebook now refines it at epoch 6.
+
+| Dataset | Epochs | mAP | R1 | R5 | R10 | Adaptation off at test (mAP / R1) | Tokens / forward | Throughput on vs off | Wall time |
+|---|---|---|---|---|---|---|---|---|---|
+| Market-1501 | 300 / 300 | **80.1** | **91.8** | 97.3 | 98.5 | 79.1 / 91.6 | −3.8 % | 250 vs 227 img/s (×1.10) | 9 h 27 min |
+| Occluded-Duke | 38 / 600 | – | – | – | – | – | – | – | stopped at the 11 h budget; ~20 h left (≈2 sessions) |
+
+Market-1501 mAP over training: 67.8 (ep 50) → 72.1 (100) → 72.4 (150) → 76.6 (200) → 79.1 (250) → 80.1 (300).
+Training accuracy reaches 1.000 and loss 0.001 by epoch 250.
+
+Reading the numbers:
+* **Accuracy:** this is the repo's Tiny protocol, a single run with seed 1234. Compare it with the paper's
+  TE-VMamba-Tiny Market-1501 row (fill `PAPER_REPORTED`). Strong baselines in the literature (BoT ResNet-50
+  ≈ 86 mAP, TransReID ViT-B ≈ 89 mAP) use 256×128 input, label smoothing and/or larger backbones, so they are not
+  like-for-like with a 224×224 VMamba-T run without label smoothing.
+* **Efficiency:** the reduction is small. All prune and merge blocks (global indices 5–7 and 9–11) sit in stage 3
+  (14×14 = 196 tokens, dim 384). Pruning keeps about 96 % and merging about 69 % of the tokens there, while stages
+  1–2 (3,136 and 784 tokens) are untouched, so the token total falls only 3.8 %. Weighting by per-token cost
+  (∝ dim²), stage 3 is roughly 55–60 % of the backbone FLOPs. That bounds the possible saving in this configuration
+  at about 10–20 %. A secondary summary of the paper mentions "over 60 % FLOPs reduction" on Market-1501. If the
+  paper says that for this Tiny setting, this run does not reproduce it. A likely contributor is observation 1–2
+  (§6): the `torch.no_grad()` around prune/merge means the pruning thresholds never train and stay at their
+  initial ~4 % pruning rate.
+* **The adaptation costs no accuracy:** with the same weights, turning it off at test gives 79.1 vs 80.1 mAP.
+
 ## 8. Suggested follow-up experiments
 * **Fix observation 1–2 and measure the difference:** remove the `torch.no_grad()` around prune/merge, so the
   thresholds and the frozen SS2D layers train. This tests whether the paper's "learnable thresholds" matter.
